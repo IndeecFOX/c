@@ -8,10 +8,11 @@ RECENT_FILE="$BASE_DIR/dnscheck_recent"          # недавно провере
 DOWN_FILE="/tmp/dnscheck_api_down"          # метка "API лежит до такого-то времени" - недолговечная, tmp норм
 RESP1_FILE="/tmp/dnscheck_resp1.json"       # тело ответа шага 1 (check) - одноразовое, tmp норм
 RESP2_FILE="/tmp/dnscheck_resp2.txt"        # тело ответа шага 2 (probe) - одноразовое, tmp норм
-SUCCESS_TTL=864000                           # сек — успешный результат не перепроверяем секунд (864000 = 10 суток)
-FAIL_COOLDOWN=3                             # сек — после ошибки (500/000/и т.п.) ждём совсем недолго
+SUCCESS_TTL=86400                           # сек — успешный результат не перепроверяем секунд (86400 = 1 сутки)
+FAIL_COOLDOWN=3                             # сек — кулдаун после ПЕРВОЙ ошибки (500/000/и т.п.)
+FAIL_COOLDOWN_MAX=3600                      # сек — потолок эскалации (1 час), выше не растёт
 DOWN_COOLDOWN=3                            # сек — пауза после ошибки API
-RETRY_MAX_ATTEMPTS=3                        # сколько раз пробовать один шаг, пока не 500/000
+RETRY_MAX_ATTEMPTS=6                        # сколько раз пробовать один шаг, пока не 500/000
 RETRY_DELAY=3                               # сек между попытками
 CHECHECK_LIST="$BASE_DIR/TCP_Custom.txt"      # сюда копим домены с вердиктом sni_block/tspu_block/cdn_block
 SKIP_WL_LIST="$BASE_DIR/skip_wl.txt"        # готовые whitelist-ответы, тоже скипаем; сюда же копим новые whitelist
@@ -26,6 +27,41 @@ dbg() {
 
 log_result() {
     [ "$ENABLE_RESULT_LOG" = "1" ] && echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$RESULT_LOG"
+}
+
+# Спрашивает у ЛОКАЛЬНОГО резолвера (127.0.0.1, тот же, что уже ответил
+# клиенту - обычно даёт мгновенный ответ из кеша), существует ли домен
+# вообще, ДО похода в cheburcheck API. Если у домена нет DNS-записи вовсе
+# (NXDOMAIN) - незачем эскалировать бесконечные 500-ки от API, которое
+# всё равно никогда не ответит по несуществующему домену.
+# Возврат: 0 - домен резолвится (или сомнительно, лучше перепроверить через API),
+# 1 - точно NXDOMAIN, дальше идти незачем.
+domain_has_dns_record() {
+    out=$(/opt/bin/nslookup "$1" 127.0.0.1 2>&1)
+    if echo "$out" | grep -qiE "NXDOMAIN|can't find|no answer"; then
+        return 1
+    fi
+    return 0
+}
+
+# Кулдаун после N-й подряд идущей ошибки одного домена: 3с, 6с, 12с, 24с...
+# удваивается на каждый провал, но не выше FAIL_COOLDOWN_MAX. Так домен,
+# который стабильно валит 500/000 (например его нет и API вместо 404 шлёт
+# 500), со временем перестаёт долбиться каждые 17 секунд, а не долбится вечно.
+cooldown_for_count() {
+    c="$1"
+    [ -z "$c" ] || [ "$c" -lt 1 ] && c=1
+    cd="$FAIL_COOLDOWN"
+    i=1
+    while [ "$i" -lt "$c" ]; do
+        cd=$((cd * 2))
+        if [ "$cd" -ge "$FAIL_COOLDOWN_MAX" ]; then
+            cd="$FAIL_COOLDOWN_MAX"
+            break
+        fi
+        i=$((i + 1))
+    done
+    echo "$cd"
 }
 
 # Одноразовая нормализация файлов списков: убирает \r (Windows-переносы),
@@ -149,40 +185,65 @@ log_result "Демон запущен"
 
             now=$(date '+%s')
 
-            # Анти-дубль: успешный результат не перепроверяем SUCCESS_TTL (сутки),
-            # результат с ошибкой (500/000/и т.п.) держим в кеше только FAIL_COOLDOWN (3с) -
-            # чтобы не долбить упавший API, но и не тормозить ретрай, когда он поднимется.
-            # Запись статуса делаем ПОСЛЕ фактической проверки (см. record_status ниже),
-            # тут только чистим протухшие записи и смотрим, есть ли живая запись по домену.
+            # Анти-дубль + эскалация кулдауна ошибок (см. cooldown_for_count выше).
+            # Формат RECENT_FILE: "ts status domain count" (count - счётчик подряд
+            # идущих ошибок, для ok всегда 0). Достаём запись текущего домена,
+            # остальные строки чистим от совсем протухших (ok старше SUCCESS_TTL,
+            # err старше FAIL_COOLDOWN_MAX - историю эскалации дальше не тащим).
+            prev_ts=""
+            prev_st=""
+            prev_count=0
             : > "${RECENT_FILE}.tmp"
-            skip=0
-            skip_status=""
-            skip_ts=""
-            while read -r ts st d; do
+            while read -r ts st d c; do
                 [ -z "$ts" ] && continue
-                valid=0
-                if [ "$st" = "ok" ] && [ $((now - ts)) -lt "$SUCCESS_TTL" ]; then
-                    valid=1
-                elif [ "$st" = "err" ] && [ $((now - ts)) -lt "$FAIL_COOLDOWN" ]; then
-                    valid=1
+                [ -z "$c" ] && c=0
+                if [ "$d" = "$domain" ]; then
+                    prev_ts="$ts"
+                    prev_st="$st"
+                    prev_count="$c"
+                    continue
                 fi
-                if [ "$valid" -eq 1 ]; then
-                    echo "$ts $st $d" >> "${RECENT_FILE}.tmp"
-                    if [ "$d" = "$domain" ]; then
-                        skip=1
-                        skip_status="$st"
-                        skip_ts="$ts"
-                    fi
+                if [ "$st" = "ok" ] && [ $((now - ts)) -lt "$SUCCESS_TTL" ]; then
+                    echo "$ts $st $d $c" >> "${RECENT_FILE}.tmp"
+                elif [ "$st" = "err" ] && [ $((now - ts)) -lt "$FAIL_COOLDOWN_MAX" ]; then
+                    echo "$ts $st $d $c" >> "${RECENT_FILE}.tmp"
                 fi
             done < "$RECENT_FILE"
             mv "${RECENT_FILE}.tmp" "$RECENT_FILE"
-            if [ "$skip" -eq 1 ]; then
-                if [ "$skip_status" = "ok" ]; then
-                    left=$((SUCCESS_TTL - (now - skip_ts)))
-                else
-                    left=$((FAIL_COOLDOWN - (now - skip_ts)))
+
+            skip=0
+            if [ "$prev_st" = "ok" ] && [ $((now - prev_ts)) -lt "$SUCCESS_TTL" ]; then
+                left=$((SUCCESS_TTL - (now - prev_ts)))
+                log_result "$domain -> SKIP (TTL кэш: ok, ещё ${left}с)"
+                echo "$prev_ts $prev_st $domain $prev_count" >> "$RECENT_FILE"
+                skip=1
+            elif [ "$prev_st" = "err" ]; then
+                cd=$(cooldown_for_count "$prev_count")
+                if [ $((now - prev_ts)) -lt "$cd" ]; then
+                    left=$((cd - (now - prev_ts)))
+                    log_result "$domain -> SKIP (TTL кэш: err x${prev_count}, ещё ${left}с)"
+                    echo "$prev_ts $prev_st $domain $prev_count" >> "$RECENT_FILE"
+                    skip=1
                 fi
-                log_result "$domain -> SKIP (TTL кэш: $skip_status, ещё ${left}с)"
+            fi
+            [ "$skip" -eq 1 ] && continue
+
+            # Счётчик для СЛЕДУЮЩЕЙ ошибки (если эта проверка тоже провалится):
+            # продолжаем эскалацию, только если предыдущий статус был err
+            if [ "$prev_st" = "err" ]; then
+                next_fail_count=$((prev_count + 1))
+            else
+                next_fail_count=1
+            fi
+
+            # Если у домена вообще нет DNS-записи (NXDOMAIN) - в API идти незачем,
+            # оно всё равно бесконечно будет 500-ть по несуществующему домену.
+            # Проверяем ТОЛЬКО тут (после анти-дубля), чтобы не дёргать nslookup
+            # на домены, которые и так уже в TTL-кэше. Кэшируем как ok на
+            # SUCCESS_TTL, как и обычный 404 от самого API.
+            if ! domain_has_dns_record "$domain"; then
+                log_result "$domain -> SKIP (NXDOMAIN, локальный DNS не подтвердил)"
+                echo "$now ok $domain 0" >> "$RECENT_FILE"
                 continue
             fi
 
@@ -205,13 +266,14 @@ log_result "Демон запущен"
 
             if [ "$step1_ok" -eq 2 ]; then
                 log_result "$domain -> SKIP (404, не найден)"
-                echo "$now ok $domain" >> "$RECENT_FILE"
+                echo "$now ok $domain 0" >> "$RECENT_FILE"
                 continue
             fi
 
             if [ "$step1_ok" -ne 0 ]; then
-                log_result "$domain -> ERROR (HTTP ${http_code:-000})"
-                echo "$now err $domain" >> "$RECENT_FILE"
+                cd=$(cooldown_for_count "$next_fail_count")
+                log_result "$domain -> ERROR (HTTP ${http_code:-000}), fail #${next_fail_count}, след. попытка через ${cd}с"
+                echo "$now err $domain $next_fail_count" >> "$RECENT_FILE"
                 echo $((now + DOWN_COOLDOWN)) > "$DOWN_FILE"
                 continue
             fi
@@ -221,8 +283,9 @@ log_result "Демон запущен"
             dbg "Получен ID: $check_id"
 
             if [ -z "$check_id" ]; then
-                log_result "$domain -> ERROR (no id in response)"
-                echo "$now err $domain" >> "$RECENT_FILE"
+                cd=$(cooldown_for_count "$next_fail_count")
+                log_result "$domain -> ERROR (no id in response), fail #${next_fail_count}, след. попытка через ${cd}с"
+                echo "$now err $domain $next_fail_count" >> "$RECENT_FILE"
                 continue
             fi
 
@@ -236,13 +299,14 @@ log_result "Демон запущен"
 
             if [ "$step2_ok" -eq 2 ]; then
                 log_result "$domain -> SKIP (404, не найден)"
-                echo "$now ok $domain" >> "$RECENT_FILE"
+                echo "$now ok $domain 0" >> "$RECENT_FILE"
                 continue
             fi
 
             if [ "$step2_ok" -ne 0 ]; then
-                log_result "$domain -> ERROR (probe HTTP ${http_code2:-000})"
-                echo "$now err $domain" >> "$RECENT_FILE"
+                cd=$(cooldown_for_count "$next_fail_count")
+                log_result "$domain -> ERROR (probe HTTP ${http_code2:-000}), fail #${next_fail_count}, след. попытка через ${cd}с"
+                echo "$now err $domain $next_fail_count" >> "$RECENT_FILE"
                 echo $((now + DOWN_COOLDOWN)) > "$DOWN_FILE"
                 continue
             fi
@@ -261,7 +325,7 @@ log_result "Демон запущен"
             [ -z "$verdict" ] && verdict="unknown"
 
             log_result "$domain -> $verdict"
-            echo "$now ok $domain" >> "$RECENT_FILE"
+            echo "$now ok $domain 0" >> "$RECENT_FILE"
 
             # Приоритет: если в вердикте есть whitelist - домен считаем доступным
             # и кладём ТОЛЬКО в SKIP_WL_LIST, даже если рядом затесался sni_block/
