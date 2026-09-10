@@ -1,0 +1,51 @@
+#!/bin/sh
+# Entware init.d скрипт для демона проверки DNS через cheburcheck API.
+# Устанавливается в /opt/etc/init.d/S99dns_check (имя может быть любым,
+# главное - начинаться с "S" и числа, определяющего порядок запуска).
+
+ENABLED=yes
+NAME=dns_check
+SCRIPT=/opt/etc/dns_check.sh          # <-- ПОПРАВЬ на реальный путь к твоему dns_check.sh
+PIDFILE=/var/run/${NAME}.pid
+LOGFILE=/opt/tmp/${NAME}_stdout.log   # stdout/stderr самого демона (не blocked_domains.log)
+
+[ "$ENABLED" = "yes" ] || exit 0
+
+start() {
+    if [ ! -x "$SCRIPT" ]; then
+        echo "$NAME: файл $SCRIPT не найден или не исполняемый"
+        exit 1
+    fi
+    echo "Starting $NAME..."
+    mkdir -p "$(dirname "$LOGFILE")" 2>/dev/null
+    start-stop-daemon -S -b -m -p "$PIDFILE" -x "$SCRIPT" -- >> "$LOGFILE" 2>&1
+}
+
+stop() {
+    echo "Stopping $NAME..."
+    start-stop-daemon -K -p "$PIDFILE" 2>/dev/null
+    killall tcpdump 2>/dev/null
+    rm -f "$PIDFILE"
+}
+
+restart() {
+    stop
+    sleep 1
+    start
+}
+
+status() {
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+        echo "$NAME запущен (pid $(cat "$PIDFILE"))"
+    else
+        echo "$NAME не запущен"
+    fi
+}
+
+case "$1" in
+    start)   start ;;
+    stop)    stop ;;
+    restart) restart ;;
+    status)  status ;;
+    *)       echo "Использование: $0 {start|stop|restart|status}" ;;
+esac
