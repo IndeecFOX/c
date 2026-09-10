@@ -8,7 +8,7 @@ RECENT_FILE="$BASE_DIR/dnscheck_recent"          # недавно провере
 DOWN_FILE="/tmp/dnscheck_api_down"          # метка "API лежит до такого-то времени" - недолговечная, tmp норм
 RESP1_FILE="/tmp/dnscheck_resp1.json"       # тело ответа шага 1 (check) - одноразовое, tmp норм
 RESP2_FILE="/tmp/dnscheck_resp2.txt"        # тело ответа шага 2 (probe) - одноразовое, tmp норм
-SUCCESS_TTL=864000                           # сек — успешный результат не перепроверяем секунд (86400 = 1 сутки). 10 дней
+SUCCESS_TTL=864000                           # сек — успешный результат не перепроверяем секунд (864000 = 10 суток)
 FAIL_COOLDOWN=3                             # сек — после ошибки (500/000/и т.п.) ждём совсем недолго
 DOWN_COOLDOWN=3                            # сек — пауза после ошибки API
 RETRY_MAX_ATTEMPTS=6                        # сколько раз пробовать один шаг, пока не 500/000
@@ -28,19 +28,42 @@ log_result() {
     [ "$ENABLE_RESULT_LOG" = "1" ] && echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$RESULT_LOG"
 }
 
+# Одноразовая нормализация файлов списков: убирает \r (Windows-переносы),
+# приводит к нижнему регистру, обрезает пробелы и краевые точки, убирает
+# пустые строки и дубли. Запускать вручную после правки списков руками:
+#   /opt/etc/dns_check.sh normalize
+# После этого рантайм-проверка (in_skip_lists) остаётся простым grep,
+# без какой-либо обработки текста на каждый DNS-запрос.
+normalize_skip_lists() {
+    for f in $SKIP_LISTS; do
+        [ -f "$f" ] || continue
+        tmp="${f}.normtmp"
+        tr -d '\r' < "$f" | tr 'A-Z' 'a-z' | sed 's/^[ \t]*//;s/[ \t]*$//;s/^\.*//;s/\.*$//' | grep -v '^$' | sort -u > "$tmp"
+        mv "$tmp" "$f"
+        echo "Нормализован: $f ($(wc -l < "$f") строк)"
+    done
+}
+
+if [ "$1" = "normalize" ]; then
+    normalize_skip_lists
+    exit 0
+fi
+
 # Проверяет домен (и его родительские домены) по всем файлам из SKIP_LISTS.
 # example.sub.ru совпадёт и с "example.sub.ru", и с "sub.ru", и с "ru".
 # При совпадении печатает путь к файлу, где нашлось, в stdout.
-# Строки файлов нормализуются (CRLF, регистр, пробелы, край. точки) -
-# иначе банальный \r\n в списке (Windows-перенос) ломает точное сравнение.
+# ВАЖНО: файлы списков должны быть заранее нормализованы (без \r, в нижнем
+# регистре, без краевых точек/пробелов) - см. normalize_skip_lists() ниже,
+# запускается один раз вручную. Наши собственные дописывания в checheck.txt/
+# skip_wl.txt и так уже чистые (домен из tcpdump), поэтому рантайм-проверка -
+# это просто grep без какой-либо обработки текста, дёшево по CPU.
 in_skip_lists() {
-    d0=$(printf '%s' "$1" | tr 'A-Z' 'a-z')
+    d0="$1"
     for f in $SKIP_LISTS; do
         [ -f "$f" ] || continue
-        normalized=$(tr -d '\r' < "$f" | tr 'A-Z' 'a-z' | sed 's/^[ \t]*//;s/[ \t]*$//;s/^\.*//;s/\.*$//')
         d="$d0"
         while [ -n "$d" ]; do
-            if printf '%s\n' "$normalized" | grep -qxF "$d"; then
+            if grep -qxF "$d" "$f" 2>/dev/null; then
                 echo "$f"
                 return 0
             fi
@@ -103,7 +126,7 @@ log_result "Демон запущен"
                 shift
             done
 
-            domain=$(echo "$domain" | sed 's/\.$//')
+            domain=$(echo "$domain" | sed 's/\.$//' | tr 'A-Z' 'a-z')
 
             # Игнорируем пустые строки, локальный мусор, запросы к самому cheburcheck
             # и googlevideo.com с любыми поддоменами (CDN видео, смысла проверять нет)
