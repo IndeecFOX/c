@@ -113,13 +113,13 @@ log_result "Демон запущен"
 /opt/bin/tcpdump -i lo -nn -l "udp port 53" 2>/dev/null | while read -r line; do
 
     case "$line" in
-        *" A? "*|*" AAAA? "*)
+        *" A? "*)
 
             # Извлекаем домен
             domain=""
             set -- $line
             while [ $# -gt 0 ]; do
-                if [ "$1" = "A?" ] || [ "$1" = "AAAA?" ]; then
+                if [ "$1" = "A?" ]; then
                     domain="$2"
                     break
                 fi
