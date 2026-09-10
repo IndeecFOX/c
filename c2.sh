@@ -8,7 +8,7 @@ RECENT_FILE="$BASE_DIR/dnscheck_recent"          # недавно провере
 DOWN_FILE="/tmp/dnscheck_api_down"          # метка "API лежит до такого-то времени" - недолговечная, tmp норм
 RESP1_FILE="/tmp/dnscheck_resp1.json"       # тело ответа шага 1 (check) - одноразовое, tmp норм
 RESP2_FILE="/tmp/dnscheck_resp2.txt"        # тело ответа шага 2 (probe) - одноразовое, tmp норм
-SUCCESS_TTL=86400                           # сек — успешный результат не перепроверяем секунд (86400 = 1 сутки)
+SUCCESS_TTL=864000                           # сек — успешный результат не перепроверяем секунд (864000 = 10 суток)
 FAIL_COOLDOWN=3                             # сек — кулдаун после ПЕРВОЙ ошибки (500/000/и т.п.)
 FAIL_COOLDOWN_MAX=3600                      # сек — потолок эскалации (1 час), выше не растёт
 DOWN_COOLDOWN=3                            # сек — пауза после ошибки API
