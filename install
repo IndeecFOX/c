@@ -9,6 +9,8 @@ blue='\033[0;34m'
 pink='\033[0;35m'
 cyan='\033[0;36m'
 
+echo "Пробуем остановить процесс если существует"
+/opt/etc/init.d/S99c2 stop
 echo "Скачивание 3 файлов и выдача прав. Если будут ошибки - выведется сообщение"
 curl --connect-timeout 9 -L -o /opt/zator/extra_strats/skip_wl.txt https://raw.githubusercontent.com/IndeecFOX/c/2/skip_wl.txt || echo "skip_wl.txt не скачался?"
 curl --connect-timeout 9 -L -o /opt/zator/extra_strats/c2.sh https://raw.githubusercontent.com/IndeecFOX/c/2/c2.sh || echo "c2.sh не скачался?"
@@ -16,6 +18,11 @@ chmod +x /opt/zator/extra_strats/c2.sh
 curl --connect-timeout 9 -L -o /opt/etc/init.d/S99c2 https://raw.githubusercontent.com/IndeecFOX/c/2/S99c2 || echo "S99c2 не скачался?"
 chmod +x /opt/etc/init.d/S99c2
 /opt/zator/extra_strats/c2.sh normalize
+read -re -p $'\033[0;32mИзменить конфиг сита в nano редакторе?: \033[0m' answer
+if [ "$answer" = "666" ]; then
+    nano /opt/zator/extra_strats/c2.sh
+fi
+echo "Продолжаем работу скрипта..."
 /opt/etc/init.d/S99c2 start
-echo "Процесс завершён. Служба должна быть запущена"
-echo "${cyan}"'2'"${yellow}"'. '"$(pidof nfqws >/dev/null && echo "${green}запущен ${yellow}c2" || echo "${red}остановлен ${yellow}c2")"'
+echo "Процесс завершён. Вызваем статус службы"
+/opt/etc/init.d/S99c2 status
