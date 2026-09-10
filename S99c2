@@ -1,11 +1,11 @@
 #!/bin/sh
 # Entware init.d скрипт для демона проверки DNS через cheburcheck API.
-# Устанавливается в /opt/etc/init.d/S99dns_check (имя может быть любым,
+# Устанавливается в /opt/etc/init.d/S99c2 (имя может быть любым,
 # главное - начинаться с "S" и числа, определяющего порядок запуска).
 
 ENABLED=yes
-NAME=dns_check
-SCRIPT=/opt/etc/dns_check.sh          # <-- ПОПРАВЬ на реальный путь к твоему dns_check.sh
+NAME=c2
+SCRIPT=/opt/zator/extra_strats/c2.sh          # <-- ПОПРАВЬ на реальный путь к твоему c2.sh
 PIDFILE=/var/run/${NAME}.pid
 LOGFILE=/opt/tmp/${NAME}_stdout.log   # stdout/stderr самого демона (не blocked_domains.log)
 
