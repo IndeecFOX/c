@@ -11,7 +11,7 @@ RESP2_FILE="/tmp/dnscheck_resp2.txt"        # тело ответа шага 2 (
 SUCCESS_TTL=864000                           # сек — успешный результат не перепроверяем секунд (864000 = 10 суток)
 FAIL_COOLDOWN=3                             # сек — после ошибки (500/000/и т.п.) ждём совсем недолго
 DOWN_COOLDOWN=3                            # сек — пауза после ошибки API
-RETRY_MAX_ATTEMPTS=6                        # сколько раз пробовать один шаг, пока не 500/000
+RETRY_MAX_ATTEMPTS=3                        # сколько раз пробовать один шаг, пока не 500/000
 RETRY_DELAY=3                               # сек между попытками
 CHECHECK_LIST="$BASE_DIR/TCP_Custom.txt"      # сюда копим домены с вердиктом sni_block/tspu_block/cdn_block
 SKIP_WL_LIST="$BASE_DIR/skip_wl.txt"        # готовые whitelist-ответы, тоже скипаем; сюда же копим новые whitelist
