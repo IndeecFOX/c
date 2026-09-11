@@ -2,8 +2,8 @@
 
 BASE_DIR="/opt/zator/extra_strats"          # тут же лежат TCP_*_list.txt - всё в одном месте, без tmp
 
-RESULT_LOG="/opt/tmp/blocked_domains.log"       # чистый лог: только домен -> результат
-DEBUG_LOG="/opt/tmp/blocked_domains_debug.log"  # подробности, для диагностики
+RESULT_LOG="/tmp/blocked_domains.log"       # чистый лог: только домен -> результат
+DEBUG_LOG="/tmp/blocked_domains_debug.log"  # подробности, для диагностики
 RECENT_FILE="$BASE_DIR/dnscheck_recent"          # недавно проверенные домены (анти-дубль)
 DOWN_FILE="/tmp/dnscheck_api_down"          # метка "API лежит до такого-то времени" - недолговечная, tmp норм
 RESP1_FILE="/tmp/dnscheck_resp1.json"       # тело ответа шага 1 (check) - одноразовое, tmp норм
@@ -18,6 +18,10 @@ CHECHECK_LIST="$BASE_DIR/TCP_Custom.txt"      # сюда копим домены
 SKIP_WL_LIST="$BASE_DIR/skip_wl.txt"        # готовые whitelist-ответы, тоже скипаем; сюда же копим новые whitelist
 SKIP_LISTS="$BASE_DIR/TCP_RKN_list.txt $BASE_DIR/TCP_YT_list.txt $BASE_DIR/TCP_Discord.txt $BASE_DIR/TCP_Custom.txt $CHECHECK_LIST $SKIP_WL_LIST"
 SKIP_RU_DOMAINS=1                           # 1 - не проверять .ru домены вообще (по умолчанию), 0 - проверять как обычно
+PRECHECK_ENABLED=1                          # 1 - перед cheburcheck пробовать загрузить страницу сами (по умолчанию)
+PRECHECK_MIN_BYTES=69000                    # 69 КБ - если скачали хотя бы столько, считаем домен доступным
+PRECHECK_TIMEOUT=5                          # сек - таймаут на саму предпроверку (не тянуть с этим долго)
+PRECHECK_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 ENABLE_RESULT_LOG=0                         # 1 - писать в blocked_domains.log (по умолчанию), 0 - выключить лог совсем
 DEBUG=0                                     # 1 - писать подробности в DEBUG_LOG
 
@@ -78,6 +82,21 @@ domain_has_dns_record() {
         [ "$attempt" -le 2 ] && sleep 1
     done
     return 1
+}
+
+# Пробует САМИ загрузить главную страницу домена под видом браузера (curl с
+# браузерным User-Agent), прежде чем идти в cheburcheck. Если удалось
+# скачать хотя бы PRECHECK_MIN_BYTES байт - домен явно доступен, и смысла
+# гонять его через двухшаговый cheburcheck API нет вообще. Если не удалось
+# (обрыв, таймаут, слишком маленький ответ) - это НЕ означает, что домен
+# заблокирован (мало ли что на самой странице) - тогда просто идём в
+# cheburcheck как обычно, для точного вердикта.
+domain_precheck_ok() {
+    d="$1"
+    size=$(/opt/bin/curl -s -o /dev/null -L -k --max-time "$PRECHECK_TIMEOUT" -A "$PRECHECK_UA" -w "%{size_download}" "https://${d}/" 2>/dev/null)
+    [ -z "$size" ] && size=0
+    dbg "Предпроверка $d: скачано ${size} байт (порог ${PRECHECK_MIN_BYTES})"
+    [ "$size" -ge "$PRECHECK_MIN_BYTES" ]
 }
 
 # Одноразовая нормализация файлов списков: убирает \r (Windows-переносы),
@@ -162,7 +181,7 @@ killall tcpdump 2>/dev/null
 
 log_result "-" "Демон запущен"
 
-/opt/bin/tcpdump -i lo -nn -l "udp port 53" 2>/dev/null | while read -r line; do
+/opt/bin/tcpdump -i br0 -nn -l "udp port 53" 2>/dev/null | while read -r line; do
 
     case "$line" in
         *" A? "*)
@@ -250,6 +269,15 @@ log_result "-" "Демон запущен"
             if ! domain_has_dns_record "$domain"; then
                 should_log_skip "$domain" && log_result "-" "$domain -> SKIP (нет DNS-записи, локальный резолвер не подтвердил)"
                 echo "$now nx $domain" >> "$RECENT_FILE"
+                continue
+            fi
+
+            # Предпроверка: пробуем сами загрузить страницу под видом браузера.
+            # Если получилось (>= PRECHECK_MIN_BYTES) - домен явно доступен,
+            # в cheburcheck за этим не идём вообще.
+            if [ "$PRECHECK_ENABLED" = "1" ] && domain_precheck_ok "$domain"; then
+                should_log_skip "$domain" && log_result "-" "$domain -> OK (предпроверка curl, >= ${PRECHECK_MIN_BYTES} байт)"
+                echo "$now ok $domain" >> "$RECENT_FILE"
                 continue
             fi
 
