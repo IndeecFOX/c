@@ -4,7 +4,8 @@ BASE_DIR="/opt/zator/extra_strats"          # тут же лежат TCP_*_list.
 
 RESULT_LOG="/tmp/blocked_domains.log"       # чистый лог: только домен -> результат
 DEBUG_LOG="/tmp/blocked_domains_debug.log"  # подробности, для диагностики
-RECENT_FILE="$BASE_DIR/dnscheck_recent"          # недавно проверенные домены (анти-дубль)
+RECENT_FILE="$BASE_DIR/dnscheck_recent"          # недавно проверенные домены (анти-дубль) - на флеше, переживает перезагрузку
+RECENT_FILE_TMP="/tmp/dnscheck_recent.tmp"       # черновик для перезаписи RECENT_FILE - в RAM, не грузит флеш на каждый чих
 DOWN_FILE="/tmp/dnscheck_api_down"          # метка "API лежит до такого-то времени" - недолговечная, tmp норм
 RESP1_FILE="/tmp/dnscheck_resp1.json"       # тело ответа шага 1 (check) - одноразовое, tmp норм
 RESP2_FILE="/tmp/dnscheck_resp2.txt"        # тело ответа шага 2 (probe) - одноразовое, tmp норм
@@ -19,7 +20,7 @@ SKIP_WL_LIST="$BASE_DIR/skip_wl.txt"        # готовые whitelist-отве�
 SKIP_LISTS="$BASE_DIR/TCP_RKN_list.txt $BASE_DIR/TCP_YT_list.txt $BASE_DIR/TCP_Discord.txt $BASE_DIR/TCP_Custom.txt $CHECHECK_LIST $SKIP_WL_LIST"
 SKIP_RU_DOMAINS=1                           # 1 - не проверять .ru домены вообще (по умолчанию), 0 - проверять как обычно
 PRECHECK_ENABLED=1                          # 1 - перед cheburcheck пробовать загрузить страницу сами (по умолчанию)
-PRECHECK_MIN_BYTES=34000                    # 32 КБ - если скачали хотя бы столько, считаем домен доступным
+PRECHECK_MIN_BYTES=34000                    # 34 КБ - если скачали хотя бы столько, считаем домен доступным
 PRECHECK_TIMEOUT=5                          # сек - таймаут на саму предпроверку (не тянуть с этим долго)
 PRECHECK_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 ENABLE_RESULT_LOG=0                         # 1 - писать в blocked_domains.log (по умолчанию), 0 - выключить лог совсем
@@ -225,7 +226,9 @@ log_result "-" "Демон запущен"
             # (Эскалация кулдауна больше не нужна: несуществующие домены теперь
             # отсеиваются через nslookup ДО API - см. domain_has_dns_record ниже,
             # так что до бесконечных повторных 500 просто не доходит.)
-            : > "${RECENT_FILE}.tmp"
+            # Черновик перезаписи - в /tmp (RAM), финальный mv на флеш - одной операцией,
+            # без промежуточных построчных записей на флеш во время самого цикла чтения.
+            : > "$RECENT_FILE_TMP"
             skip=0
             skip_status=""
             skip_ts=""
@@ -240,7 +243,7 @@ log_result "-" "Демон запущен"
                     valid=1
                 fi
                 if [ "$valid" -eq 1 ]; then
-                    echo "$ts $st $d" >> "${RECENT_FILE}.tmp"
+                    echo "$ts $st $d" >> "$RECENT_FILE_TMP"
                     if [ "$d" = "$domain" ]; then
                         skip=1
                         skip_status="$st"
@@ -248,7 +251,7 @@ log_result "-" "Демон запущен"
                     fi
                 fi
             done < "$RECENT_FILE"
-            mv "${RECENT_FILE}.tmp" "$RECENT_FILE"
+            mv "$RECENT_FILE_TMP" "$RECENT_FILE"
             if [ "$skip" -eq 1 ]; then
                 if [ "$skip_status" = "ok" ]; then
                     left=$((SUCCESS_TTL - (now - skip_ts)))
