@@ -21,7 +21,7 @@ curl --connect-timeout 9 -L -o /opt/etc/init.d/S99c2 https://raw.githubuserconte
 chmod +x /opt/etc/init.d/S99c2
 read -r -p $'\033[0;32mВыполнить нормализацию листов? Рекомендуется единожды если листы не трогались руками. Не знаете? Делайте.(enter - Да. 666 - нет): \033[0m' answer_norm
 if [ "$answer_norm" = "666" ]; then
-    Пропущено (/opt/zator/extra_strats/c2.sh normalize)
+    echo "Пропущено (/opt/zator/extra_strats/c2.sh normalize)"
 else
     nano /opt/zator/extra_strats/c2.sh
 fi
