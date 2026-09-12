@@ -1,30 +1,33 @@
 #!/bin/sh
 
-BASE_DIR="/opt/zator/extra_strats"          # тут же лежат TCP_*_list.txt - всё в одном месте, без tmp
+#Наиболее интересные настройки
+CDN_RECLASSIFY_ENABLED=1                    # Добавлять домены с заблокированных CDN диапазонов в TCP_custom запрета
 
+ENABLE_RESULT_LOG=0                         # 1 - писать в blocked_domains.log (по умолчанию), 0 - выключить лог совсем
 RESULT_LOG="/tmp/blocked_domains.log"       # чистый лог: только домен -> результат
-DEBUG_LOG="/tmp/blocked_domains_debug.log"  # подробности, для диагностики
+SUCCESS_TTL=864000                           # сек — успешный результат не перепроверяем секунд (864000 = 10 суток)
+SKIP_RU_DOMAINS=1                           # 1 - не проверять .ru домены вообще (по умолчанию), 0 - проверять как обычно
+CHECHECK_LIST="$BASE_DIR/TCP_Custom.txt"      # сюда копим домены с вердиктом sni_block/tspu_block/cdn_block
+PRECHECK_ENABLED=1                          # 1 - перед cheburcheck пробовать загрузить страницу с помощью curl (по умолчанию)
+PRECHECK_MIN_BYTES=34000                    # (34000) 34 КБ - если курл скачал хотя бы столько, считаем домен доступным
+PRECHECK_TIMEOUT=5                          # сек - таймаут на саму предпроверку курлом
+BASE_DIR="/opt/zator/extra_strats"          # тут же лежат TCP_*_list.txt - всё в одном месте, без tmp
+                                             
+SKIP_LISTS="$BASE_DIR/TCP_RKN_list.txt $BASE_DIR/TCP_YT_list.txt $BASE_DIR/TCP_Discord.txt $BASE_DIR/TCP_Custom.txt $CHECHECK_LIST $SKIP_WL_LIST"
 RECENT_FILE="$BASE_DIR/dnscheck_recent"          # недавно проверенные домены (анти-дубль) - на флеше, переживает перезагрузку
 RECENT_FILE_TMP="/tmp/dnscheck_recent.tmp"       # черновик для перезаписи RECENT_FILE - в RAM, не грузит флеш на каждый чих
 DOWN_FILE="/tmp/dnscheck_api_down"          # метка "API лежит до такого-то времени" - недолговечная, tmp норм
 RESP1_FILE="/tmp/dnscheck_resp1.json"       # тело ответа шага 1 (check) - одноразовое, tmp норм
 RESP2_FILE="/tmp/dnscheck_resp2.txt"        # тело ответа шага 2 (probe) - одноразовое, tmp норм
-SUCCESS_TTL=864000                           # сек — успешный результат не перепроверяем секунд (864000 = 10 суток)
 NXDOMAIN_TTL=3600                           # сек — для "домена нет" кэш короче (1 час): вдруг это была временная заминка резолвера
 FAIL_COOLDOWN=3                             # сек — после ошибки (500/000/и т.п.) ждём совсем недолго
 DOWN_COOLDOWN=3                            # сек — пауза после ошибки API
 RETRY_MAX_ATTEMPTS=6                        # сколько раз пробовать один шаг, пока не 500/000
 RETRY_DELAY=3                               # сек между попытками
-CHECHECK_LIST="$BASE_DIR/TCP_Custom.txt"      # сюда копим домены с вердиктом sni_block/tspu_block/cdn_block
 SKIP_WL_LIST="$BASE_DIR/skip_wl.txt"        # готовые whitelist-ответы, тоже скипаем; сюда же копим новые whitelist
-SKIP_LISTS="$BASE_DIR/TCP_RKN_list.txt $BASE_DIR/TCP_YT_list.txt $BASE_DIR/TCP_Discord.txt $BASE_DIR/TCP_Custom.txt $CHECHECK_LIST $SKIP_WL_LIST"
-SKIP_RU_DOMAINS=1                           # 1 - не проверять .ru домены вообще (по умолчанию), 0 - проверять как обычно
-PRECHECK_ENABLED=1                          # 1 - перед cheburcheck пробовать загрузить страницу сами (по умолчанию)
-PRECHECK_MIN_BYTES=34000                    # 34 КБ - если скачали хотя бы столько, считаем домен доступным
-PRECHECK_TIMEOUT=5                          # сек - таймаут на саму предпроверку (не тянуть с этим долго)
 PRECHECK_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-ENABLE_RESULT_LOG=0                         # 1 - писать в blocked_domains.log (по умолчанию), 0 - выключить лог совсем
 DEBUG=0                                     # 1 - писать подробности в DEBUG_LOG
+DEBUG_LOG="/tmp/blocked_domains_debug.log"  # подробности, для диагностики
 
 dbg() {
     [ "$DEBUG" = "1" ] && echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$DEBUG_LOG"
@@ -98,6 +101,16 @@ domain_precheck_ok() {
     [ -z "$size" ] && size=0
     dbg "Предпроверка $d: скачано ${size} байт (порог ${PRECHECK_MIN_BYTES})"
     [ "$size" -ge "$PRECHECK_MIN_BYTES" ]
+}
+
+# Проверяет, непустое ли поле "cdn_providers" в ответе ШАГА 1 (/api/v1/check).
+# Логика подсмотрена на самой странице cheburcheck: если домен числится на
+# известном CDN-диапазоне (cdn_providers непустой), точный вердикт "ok" от
+# пробинга страница показывает как "CDN Блок" - "whitelist" эта подмена НЕ
+# затрагивает никогда (см. xe() на странице: n === 'ok' ? 'cdn_block' : n).
+response_has_cdn_providers() {
+    inner=$(echo "$1" | grep -o '"cdn_providers":{[^}]*}' | sed 's/^"cdn_providers":{//; s/}$//')
+    [ -n "$inner" ]
 }
 
 # Одноразовая нормализация файлов списков: убирает \r (Windows-переносы),
@@ -318,6 +331,15 @@ log_result "-" "Демон запущен"
             check_id=$(echo "$response" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
             dbg "Получен ID: $check_id"
 
+            # Домен на известном CDN-диапазоне? Нужно для переклассификации
+            # точного "ok" в "cdn_block" ниже, после получения вердикта.
+            if [ "$CDN_RECLASSIFY_ENABLED" = "1" ] && response_has_cdn_providers "$response"; then
+                has_cdn=1
+                dbg "$domain: cdn_providers непустой - точный ok будет переклассифицирован в cdn_block"
+            else
+                has_cdn=0
+            fi
+
             if [ -z "$check_id" ]; then
                 log_result "+" "$domain -> ERROR (no id in response)"
                 echo "$now err $domain" >> "$RECENT_FILE"
@@ -345,13 +367,16 @@ log_result "-" "Демон запущен"
                 continue
             fi
 
-            # Достаём data-строки, идущие сразу за "event:result", и берём из них verdicts
+            # Достаём data-строки, идущие сразу за "event:result", и берём из них verdicts.
+            # Если has_cdn=1 - точное "ok" (и только "ok", "whitelist" не трогаем)
+            # переклассифицируем в "cdn_block" ДО дедупликации - как на самой странице.
             verdict=$(printf '%s\n' "$probe_data" \
                 | awk '/^event:result/ { getline; if ($0 ~ /^data:/) print }' \
                 | sed -n 's/.*"verdicts":\[\(.*\)\].*/\1/p' \
                 | tr ',' '\n' \
                 | tr -d '"' \
                 | sed 's/^[ \t]*//;s/[ \t]*$//' \
+                | { if [ "$has_cdn" = "1" ]; then sed 's/^ok$/cdn_block/'; else cat; fi; } \
                 | sort -u \
                 | tr '\n' ',' \
                 | sed 's/,$//')
