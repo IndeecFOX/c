@@ -5,6 +5,8 @@ CDN_RECLASSIFY_ENABLED=1                    # Добавлять домены с
 
 ENABLE_RESULT_LOG=0                         # 1 - писать в blocked_domains.log (по умолчанию), 0 - выключить лог совсем
 RESULT_LOG="/tmp/blocked_domains.log"       # чистый лог: только домен -> результат
+LOG_MAX_BYTES=$((5 * 1024 * 1024))          # 5 МБ - порог, после которого лог обрезается
+LOG_KEEP_LINES=20000                         # сколько последних строк оставить при обрезке
 SUCCESS_TTL=864000                           # сек — успешный результат не перепроверяем секунд (864000 = 10 суток)
 SKIP_RU_DOMAINS=1                           # 1 - не проверять .ru домены вообще (по умолчанию), 0 - проверять как обычно
 BASE_DIR="/opt/zator/extra_strats"
@@ -29,14 +31,42 @@ PRECHECK_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML
 DEBUG=0                                     # 1 - писать подробности в DEBUG_LOG
 DEBUG_LOG="/tmp/blocked_domains_debug.log"  # подробности, для диагностики
 
+# Размер файла БЕЗ чтения всего содержимого (только метаданные) - через stat.
+# Если stat недоступен (редкость на entware) - fallback на wc -c (читает файл).
+file_size() {
+    sz=$(stat -c%s "$1" 2>/dev/null)
+    if [ -z "$sz" ]; then
+        sz=$(wc -c < "$1" 2>/dev/null)
+    fi
+    echo "${sz:-0}"
+}
+
+# Если файл лога превысил LOG_MAX_BYTES - обрезаем до последних LOG_KEEP_LINES
+# строк. tail читает весь файл, но это происходит РЕДКО (только при
+# превышении порога), а не на каждую запись - основная проверка (file_size)
+# дешёвая и гоняется на каждый вызов log_result/dbg без ощутимой нагрузки.
+rotate_log_if_needed() {
+    f="$1"
+    [ -f "$f" ] || return 0
+    size=$(file_size "$f")
+    if [ "$size" -gt "$LOG_MAX_BYTES" ]; then
+        tail -n "$LOG_KEEP_LINES" "$f" > "${f}.rotatetmp" 2>/dev/null
+        mv "${f}.rotatetmp" "$f"
+    fi
+}
+
 dbg() {
-    [ "$DEBUG" = "1" ] && echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$DEBUG_LOG"
+    [ "$DEBUG" = "1" ] || return 0
+    rotate_log_if_needed "$DEBUG_LOG"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$DEBUG_LOG"
 }
 
 log_result() {
     # $1 - маркер: "+" реально ходили в cheburcheck на этом шаге, "-" скип без API
     # $2 - текст сообщения
-    [ "$ENABLE_RESULT_LOG" = "1" ] && echo "$(date '+%Y-%m-%d %H:%M:%S') $1 $2" >> "$RESULT_LOG"
+    [ "$ENABLE_RESULT_LOG" = "1" ] || return 0
+    rotate_log_if_needed "$RESULT_LOG"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') $1 $2" >> "$RESULT_LOG"
 }
 
 # Не логируем повторно ОДНО И ТО ЖЕ событие skip по одному домену чаще, чем
