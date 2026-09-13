@@ -15,6 +15,7 @@ PRECHECK_ENABLED=1                          # 1 - перед cheburcheck про�
 PRECHECK_MIN_BYTES=34000                    # (34000) 34 КБ - если курл скачал хотя бы столько, считаем домен доступным
 PRECHECK_TIMEOUT=5                          # сек - таймаут на саму предпроверку курлом
 
+SKIP_WL_LIST="$BASE_DIR/skip_wl.txt"        # готовые whitelist-ответы, тоже скипаем; сюда же копим новые whitelist
 SKIP_LISTS="$BASE_DIR/TCP_RKN_list.txt $BASE_DIR/TCP_YT_list.txt $BASE_DIR/TCP_Discord.txt $BASE_DIR/TCP_Custom.txt $CHECHECK_LIST $SKIP_WL_LIST"
 RECENT_FILE="$BASE_DIR/dnscheck_recent"          # недавно проверенные домены (анти-дубль) - на флеше, переживает перезагрузку
 RECENT_FILE_TMP="/tmp/dnscheck_recent.tmp"       # черновик для перезаписи RECENT_FILE - в RAM, не грузит флеш на каждый чих
@@ -26,7 +27,6 @@ FAIL_COOLDOWN=3                             # сек — после ошибки
 DOWN_COOLDOWN=3                            # сек — пауза после ошибки API
 RETRY_MAX_ATTEMPTS=6                        # сколько раз пробовать один шаг, пока не 500/000
 RETRY_DELAY=3                               # сек между попытками
-SKIP_WL_LIST="$BASE_DIR/skip_wl.txt"        # готовые whitelist-ответы, тоже скипаем; сюда же копим новые whitelist
 PRECHECK_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 DEBUG=0                                     # 1 - писать подробности в DEBUG_LOG
 DEBUG_LOG="/tmp/blocked_domains_debug.log"  # подробности, для диагностики
