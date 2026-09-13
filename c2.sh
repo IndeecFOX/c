@@ -1,7 +1,5 @@
 #!/bin/sh
 
-BASE_DIR="/opt/zator/extra_strats"          # тут же лежат TCP_*_list.txt - всё в одном месте, без tmp
-
 #Наиболее интересные настройки
 CDN_RECLASSIFY_ENABLED=1                    # Добавлять домены с заблокированных CDN диапазонов в TCP_custom запрета
 
@@ -9,11 +7,12 @@ ENABLE_RESULT_LOG=0                         # 1 - писать в blocked_domain
 RESULT_LOG="/tmp/blocked_domains.log"       # чистый лог: только домен -> результат
 SUCCESS_TTL=864000                           # сек — успешный результат не перепроверяем секунд (864000 = 10 суток)
 SKIP_RU_DOMAINS=1                           # 1 - не проверять .ru домены вообще (по умолчанию), 0 - проверять как обычно
+BASE_DIR="/opt/zator/extra_strats"
 CHECHECK_LIST="$BASE_DIR/TCP_Custom.txt"      # сюда копим домены с вердиктом sni_block/tspu_block/cdn_block
 PRECHECK_ENABLED=1                          # 1 - перед cheburcheck пробовать загрузить страницу с помощью curl (по умолчанию)
 PRECHECK_MIN_BYTES=34000                    # (34000) 34 КБ - если курл скачал хотя бы столько, считаем домен доступным
 PRECHECK_TIMEOUT=5                          # сек - таймаут на саму предпроверку курлом
-                                             
+
 SKIP_LISTS="$BASE_DIR/TCP_RKN_list.txt $BASE_DIR/TCP_YT_list.txt $BASE_DIR/TCP_Discord.txt $BASE_DIR/TCP_Custom.txt $CHECHECK_LIST $SKIP_WL_LIST"
 RECENT_FILE="$BASE_DIR/dnscheck_recent"          # недавно проверенные домены (анти-дубль) - на флеше, переживает перезагрузку
 RECENT_FILE_TMP="/tmp/dnscheck_recent.tmp"       # черновик для перезаписи RECENT_FILE - в RAM, не грузит флеш на каждый чих
@@ -234,7 +233,7 @@ log_result "-" "Демон запущен"
                 continue
             fi
 
-            # Анти-дубль: успешный результат не перепроверяем SUCCESS_TTL (сутки),
+            # Анти-дубль: успешный результат не перепроверяем SUCCESS_TTL (10 суток),
             # результат с ошибкой (500/000/и т.п.) держим в кеше только FAIL_COOLDOWN -
             # чтобы не долбить упавший API, но и не тормозить ретрай, когда он поднимется.
             # (Эскалация кулдауна больше не нужна: несуществующие домены теперь
@@ -384,12 +383,25 @@ log_result "-" "Демон запущен"
 
             [ -z "$verdict" ] && verdict="unknown"
 
+            # Исключение: cdn_block + whitelist ОДНОВРЕМЕННО - это не "домен доступен",
+            # а единичный TSPU-обход на одном из проб-хостов (у него внезапно стали
+            # доступны все CDN), из-за которого этот один хост дал "whitelist", пока
+            # остальные видят реальный CDN-блок. В этом случае итог - именно cdn_block,
+            # whitelist из финального вердикта убираем.
+            if printf '%s\n' "$verdict" | tr ',' '\n' | grep -qx "cdn_block" \
+               && printf '%s\n' "$verdict" | tr ',' '\n' | grep -qx "whitelist"; then
+                dbg "$domain: cdn_block+whitelist одновременно - считаем исключением (TSPU-обход), итог cdn_block"
+                verdict="cdn_block"
+            fi
+
             log_result "+" "$domain -> $verdict"
             echo "$now ok $domain" >> "$RECENT_FILE"
 
             # Приоритет: если в вердикте есть whitelist - домен считаем доступным
             # и кладём ТОЛЬКО в SKIP_WL_LIST, даже если рядом затесался sni_block/
-            # tspu_block/cdn_block (например "tspu_block,whitelist" - это whitelist).
+            # tspu_block (например "tspu_block,whitelist" - это whitelist).
+            # cdn_block+whitelist сюда уже не попадёт - см. исключение выше, там
+            # whitelist из вердикта убирается заранее.
             # Иначе, если есть один из блокирующих вердиктов - кладём в CHECHECK_LIST.
             if printf '%s\n' "$verdict" | tr ',' '\n' | grep -qx "whitelist"; then
                 if ! grep -qxF "$domain" "$SKIP_WL_LIST" 2>/dev/null; then
