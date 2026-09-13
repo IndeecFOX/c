@@ -23,9 +23,8 @@ read -r -p $'\033[0;32mВыполнить нормализацию листов?
 if [ "$answer_norm" = "666" ]; then
     echo "Пропущено (/opt/zator/extra_strats/c2.sh normalize)"
 else
-    nano /opt/zator/extra_strats/c2.sh
+    /opt/zator/extra_strats/c2.sh normalize
 fi
-/opt/zator/extra_strats/c2.sh normalize
 read -r -p $'\033[0;32mИзменить конфиг сита в nano редакторе?(enter - нет. 666 - да): \033[0m' answer
 if [ "$answer" = "666" ]; then
     nano /opt/zator/extra_strats/c2.sh
