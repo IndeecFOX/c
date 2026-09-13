@@ -1,5 +1,7 @@
 #!/bin/sh
 
+BASE_DIR="/opt/zator/extra_strats"          # тут же лежат TCP_*_list.txt - всё в одном месте, без tmp
+
 #Наиболее интересные настройки
 CDN_RECLASSIFY_ENABLED=1                    # Добавлять домены с заблокированных CDN диапазонов в TCP_custom запрета
 
@@ -11,7 +13,6 @@ CHECHECK_LIST="$BASE_DIR/TCP_Custom.txt"      # сюда копим домены
 PRECHECK_ENABLED=1                          # 1 - перед cheburcheck пробовать загрузить страницу с помощью curl (по умолчанию)
 PRECHECK_MIN_BYTES=34000                    # (34000) 34 КБ - если курл скачал хотя бы столько, считаем домен доступным
 PRECHECK_TIMEOUT=5                          # сек - таймаут на саму предпроверку курлом
-BASE_DIR="/opt/zator/extra_strats"          # тут же лежат TCP_*_list.txt - всё в одном месте, без tmp
                                              
 SKIP_LISTS="$BASE_DIR/TCP_RKN_list.txt $BASE_DIR/TCP_YT_list.txt $BASE_DIR/TCP_Discord.txt $BASE_DIR/TCP_Custom.txt $CHECHECK_LIST $SKIP_WL_LIST"
 RECENT_FILE="$BASE_DIR/dnscheck_recent"          # недавно проверенные домены (анти-дубль) - на флеше, переживает перезагрузку
