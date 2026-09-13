@@ -2145,3 +2145,8 @@ zscaler.com
 zuimeitianqi.com
 zyxel.com
 zztfly.com
+steam-chat.com
+pool.ntp.org
+aaplimg.com
+allawntech.com
+apple-dns.net
