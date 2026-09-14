@@ -2,6 +2,7 @@
 
 #Наиболее интересные настройки
 CDN_RECLASSIFY_ENABLED=1                    # Добавлять домены с заблокированных CDN диапазонов в TCP_custom запрета
+ADD_SECOND_LEVEL_TO_CHECHECK=0              # 1 - в TCP_Custom.txt добавлять не полный домен, а только 2 уровня (напр. akadns.net)
 
 ENABLE_RESULT_LOG=0                         # 1 - писать в blocked_domains.log (по умолчанию), 0 - выключить лог совсем
 RESULT_LOG="/tmp/blocked_domains.log"       # чистый лог: только домен -> результат
@@ -141,6 +142,16 @@ domain_precheck_ok() {
 response_has_cdn_providers() {
     inner=$(echo "$1" | grep -o '"cdn_providers":{[^}]*}' | sed 's/^"cdn_providers":{//; s/}$//')
     [ -n "$inner" ]
+}
+
+# Возвращает последние два лейбла домена (упрощённый "второй уровень"):
+# mesu-cdn.origin-apple.com.akadns.net -> akadns.net
+# example.com -> example.com (уже 2 уровня, менять нечего)
+# ВНИМАНИЕ: это наивное усечение по количеству точек, оно не знает о
+# составных TLD вроде co.uk/com.br - для них тоже отрежет только последние
+# два лейбла (co.uk вместо site.co.uk). Осознанный компромисс ради простоты.
+second_level_domain() {
+    echo "$1" | awk -F. '{ if (NF >= 2) print $(NF-1)"."$NF; else print $0 }'
 }
 
 # Одноразовая нормализация файлов списков: убирает \r (Windows-переносы),
@@ -433,15 +444,22 @@ log_result "-" "Демон запущен"
             # cdn_block+whitelist сюда уже не попадёт - см. исключение выше, там
             # whitelist из вердикта убирается заранее.
             # Иначе, если есть один из блокирующих вердиктов - кладём в CHECHECK_LIST.
+            # Полная проверка (DNS, precheck, cheburcheck) всегда шла по ПОЛНОМУ
+            # домену - усечение до 2 уровней (если включено флагом) применяется
+            # только сейчас, в момент записи строки в файл.
             if printf '%s\n' "$verdict" | tr ',' '\n' | grep -qx "whitelist"; then
                 if ! grep -qxF "$domain" "$SKIP_WL_LIST" 2>/dev/null; then
                     echo "$domain" >> "$SKIP_WL_LIST"
                     dbg "Добавлен в $SKIP_WL_LIST: $domain"
                 fi
             elif printf '%s\n' "$verdict" | tr ',' '\n' | grep -qxE "sni_block|tspu_block|cdn_block"; then
-                if ! grep -qxF "$domain" "$CHECHECK_LIST" 2>/dev/null; then
-                    echo "$domain" >> "$CHECHECK_LIST"
-                    dbg "Добавлен в $CHECHECK_LIST: $domain"
+                add_domain="$domain"
+                if [ "$ADD_SECOND_LEVEL_TO_CHECHECK" = "1" ]; then
+                    add_domain=$(second_level_domain "$domain")
+                fi
+                if ! grep -qxF "$add_domain" "$CHECHECK_LIST" 2>/dev/null; then
+                    echo "$add_domain" >> "$CHECHECK_LIST"
+                    dbg "Добавлен в $CHECHECK_LIST: $add_domain (полный домен: $domain)"
                 fi
             fi
             ;;
