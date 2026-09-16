@@ -2,15 +2,15 @@
 
 BASE_DIR="/opt/zator/extra_strats"
 
-echo "Установка tcpdump и curl"
+echo "Установка tcpdump"
 if command -v apk >/dev/null 2>&1; then
-    apk update && apk add tcpdump curl
+    apk update && apk add tcpdump
     default_iface="br0"
 elif command -v opkg >/dev/null 2>&1; then
-    opkg update && opkg install tcpdump curl
+    opkg update && opkg install tcpdump
     default_iface="br0"
 elif command -v apt-get >/dev/null 2>&1; then
-    apt-get update && apt-get install -y tcpdump curl dnsutils psmisc
+    apt-get update && apt-get install -y tcpdump
     default_iface="any"
 else
     echo "Не найден ни apk, ни opkg, ни apt - ставь tcpdump/curl вручную" >&2
