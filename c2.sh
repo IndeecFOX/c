@@ -3,6 +3,7 @@
 #Наиболее интересные настройки
 CDN_RECLASSIFY_ENABLED=1                    # Добавлять домены с заблокированных CDN диапазонов в TCP_custom запрета
 ADD_SECOND_LEVEL_TO_CHECHECK=0              # 1 - в TCP_Custom.txt добавлять не полный домен, а только 2 уровня (напр. akadns.net)
+LAN_IFACE="br0"
 
 ENABLE_RESULT_LOG=0                         # 1 - писать в blocked_domains.log (по умолчанию), 0 - выключить лог совсем
 RESULT_LOG="/tmp/blocked_domains.log"       # чистый лог: только домен -> результат
@@ -99,16 +100,7 @@ domain_has_dns_record() {
     d="$1"
     attempt=1
     while [ "$attempt" -le 2 ]; do
-        if command -v nslookup >/dev/null 2>&1; then
-            out=$(nslookup "$d" 127.0.0.1 2>&1)
-        elif [ -x /opt/bin/nslookup ]; then
-            out=$(/opt/bin/nslookup "$d" 127.0.0.1 2>&1)
-        elif command -v busybox >/dev/null 2>&1; then
-            out=$(busybox nslookup "$d" 127.0.0.1 2>&1)
-        else
-            dbg "nslookup не найден ни в PATH, ни в /opt/bin, ни через busybox - проверку пропускаем"
-            return 0
-        fi
+        out=$(nslookup "$d" 127.0.0.1 2>&1)
         dbg "nslookup $d (попытка $attempt): $out"
         if ! echo "$out" | grep -qiE "can't resolve|can't find|NXDOMAIN|no answer|temporary failure in name resolution"; then
             return 0
@@ -128,7 +120,7 @@ domain_has_dns_record() {
 # cheburcheck как обычно, для точного вердикта.
 domain_precheck_ok() {
     d="$1"
-    size=$(/opt/bin/curl -s -o /dev/null -L -k --max-time "$PRECHECK_TIMEOUT" -A "$PRECHECK_UA" -w "%{size_download}" "https://${d}/" 2>/dev/null)
+    size=$(curl -s -o /dev/null -L -k --max-time "$PRECHECK_TIMEOUT" -A "$PRECHECK_UA" -w "%{size_download}" "https://${d}/" 2>/dev/null)
     [ -z "$size" ] && size=0
     dbg "Предпроверка $d: скачано ${size} байт (порог ${PRECHECK_MIN_BYTES})"
     [ "$size" -ge "$PRECHECK_MIN_BYTES" ]
@@ -211,7 +203,7 @@ fetch_retry() {
     outfile="$2"
     attempt=1
     while [ "$attempt" -le "$RETRY_MAX_ATTEMPTS" ]; do
-        code=$(/opt/bin/curl -s -o "$outfile" --max-time 8 -w "%{http_code}" "$url")
+        code=$(curl -s -o "$outfile" --max-time 8 -w "%{http_code}" "$url")
         if [ "$code" = "200" ] && [ -s "$outfile" ]; then
             echo "$code"
             return 0
@@ -236,7 +228,7 @@ killall tcpdump 2>/dev/null
 
 log_result "-" "Демон запущен"
 
-/opt/bin/tcpdump -i br0 -nn -l "udp port 53" 2>/dev/null | while read -r line; do
+tcpdump -i "$LAN_IFACE" -nn -l "udp port 53" 2>/dev/null | while read -r line; do
 
     case "$line" in
         *" A? "*)
