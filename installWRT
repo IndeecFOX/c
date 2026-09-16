@@ -1,0 +1,52 @@
+#!/bin/sh
+
+BASE_DIR="/opt/zator/extra_strats"
+INIT_SCRIPT="/etc/init.d/c2"
+
+echo "Установка tcpdump и curl"
+if command -v apk >/dev/null 2>&1; then
+    apk update && apk add tcpdump curl
+elif command -v opkg >/dev/null 2>&1; then
+    opkg update && opkg install tcpdump curl
+else
+    echo "Не найден ни apk, ни opkg - ставь tcpdump и curl вручную" >&2
+fi
+
+[ -x "$INIT_SCRIPT" ] && "$INIT_SCRIPT" stop 2>/dev/null
+
+mkdir -p "$BASE_DIR"
+
+TARGET="$BASE_DIR/skip_wl.txt"
+TMP_NEW="/tmp/skip_wl_new.txt"
+if ! curl --connect-timeout 9 -f -L -o "$TMP_NEW" https://raw.githubusercontent.com/IndeecFOX/c/2/skip_wl.txt; then
+    echo "Ошибка скачивания skip_wl.txt - оставляем текущий файл без изменений"
+    rm -f "$TMP_NEW"
+    exit 1
+fi
+{ [ -f "$TARGET" ] && cat "$TARGET"; cat "$TMP_NEW"; } | sort -u > /tmp/skip_wl_merged.txt
+before=0; [ -f "$TARGET" ] && before=$(wc -l < "$TARGET")
+mv /tmp/skip_wl_merged.txt "$TARGET"
+rm -f "$TMP_NEW"
+echo "Объединено: было ${before} строк, стало $(wc -l < "$TARGET")"
+
+curl --connect-timeout 9 -L -o "$BASE_DIR/c2.sh" https://raw.githubusercontent.com/IndeecFOX/c/2/c2.sh || echo "c2.sh не скачался?"
+chmod +x "$BASE_DIR/c2.sh"
+
+curl --connect-timeout 9 -L -o "$INIT_SCRIPT" https://raw.githubusercontent.com/IndeecFOX/c/2/c2.init || echo "init-скрипт не скачался?"
+chmod +x "$INIT_SCRIPT"
+
+read -r -p "LAN-интерфейс для tcpdump (enter - br0): " lan_iface
+lan_iface="${lan_iface:-br0}"
+sed -i "s/^LAN_IFACE=.*/LAN_IFACE=\"$lan_iface\"/" "$BASE_DIR/c2.sh"
+
+read -r -p "Выполнить нормализацию листов? (enter - да, 666 - нет): " a
+[ "$a" = "666" ] || "$BASE_DIR/c2.sh" normalize
+
+EDITOR_CMD="vi"
+command -v nano >/dev/null 2>&1 && EDITOR_CMD="nano"
+read -r -p "Изменить конфиг сита? (enter - нет, 666 - да): " a
+[ "$a" = "666" ] && "$EDITOR_CMD" "$BASE_DIR/c2.sh"
+
+"$INIT_SCRIPT" enable
+"$INIT_SCRIPT" start
+"$INIT_SCRIPT" running && echo "запущено" || echo "не запустилось, смотри logread"
