@@ -4,6 +4,7 @@
 CDN_RECLASSIFY_ENABLED=1                    # Добавлять домены с заблокированных CDN диапазонов в TCP_custom запрета
 ADD_SECOND_LEVEL_TO_CHECHECK=0              # 1 - в TCP_Custom.txt добавлять не полный домен, а только 2 уровня (напр. akadns.net)
 LAN_IFACE="br0"
+RECENT_MAX_LINES=9000                       # порог строк в RECENT_FILE, после которого чистим протухшие записи DNS timestamp (не на каждый запрос, а по достижении порога - как с логами ниже)
 
 ENABLE_RESULT_LOG=0                         # 1 - писать в blocked_domains.log (по умолчанию), 0 - выключить лог совсем
 RESULT_LOG="/tmp/blocked_domains.log"       # чистый лог: только домен -> результат
@@ -272,32 +273,28 @@ tcpdump -i "$LAN_IFACE" -nn -l "udp port 53" 2>/dev/null | while read -r line; d
             # (Эскалация кулдауна больше не нужна: несуществующие домены теперь
             # отсеиваются через nslookup ДО API - см. domain_has_dns_record ниже,
             # так что до бесконечных повторных 500 просто не доходит.)
-            # Черновик перезаписи - в /tmp (RAM), финальный mv на флеш - одной операцией,
-            # без промежуточных построчных записей на флеш во время самого цикла чтения.
-            : > "$RECENT_FILE_TMP"
+            #
+            # ВАЖНО: ищем последнюю запись по домену через awk - это ТОЛЬКО ЧТЕНИЕ
+            # файла, флешу от чтения ничего не будет. Раньше тут на каждый DNS-запрос
+            # перечитывался и полностью перезаписывался весь RECENT_FILE (через
+            # RECENT_FILE_TMP в /tmp + mv) - а поскольку /tmp это RAM, а RECENT_FILE
+            # на флеше, этот mv был кросс-файловым, то есть каждый раз ПОЛНОЕ
+            # копирование содержимого файла на флеш, а не дешёвый rename. При частых
+            # DNS-запросах и файле на тысячи строк это ощутимо насилует флеш.
+            # awk 'd==$3' - сравнение строкой (не regex), точки в домене не мешают.
             skip=0
             skip_status=""
             skip_ts=""
-            while read -r ts st d; do
-                [ -z "$ts" ] && continue
-                valid=0
-                if [ "$st" = "ok" ] && [ $((now - ts)) -lt "$SUCCESS_TTL" ]; then
-                    valid=1
-                elif [ "$st" = "nx" ] && [ $((now - ts)) -lt "$NXDOMAIN_TTL" ]; then
-                    valid=1
-                elif [ "$st" = "err" ] && [ $((now - ts)) -lt "$FAIL_COOLDOWN" ]; then
-                    valid=1
-                fi
-                if [ "$valid" -eq 1 ]; then
-                    echo "$ts $st $d" >> "$RECENT_FILE_TMP"
-                    if [ "$d" = "$domain" ]; then
-                        skip=1
-                        skip_status="$st"
-                        skip_ts="$ts"
-                    fi
-                fi
-            done < "$RECENT_FILE"
-            mv "$RECENT_FILE_TMP" "$RECENT_FILE"
+            match=$(awk -v d="$domain" '$3==d{ts=$1; st=$2} END{if(ts) print ts, st}' "$RECENT_FILE")
+            if [ -n "$match" ]; then
+                skip_ts=${match%% *}
+                skip_status=${match#* }
+                case "$skip_status" in
+                    ok)  [ $((now - skip_ts)) -lt "$SUCCESS_TTL" ] && skip=1 ;;
+                    nx)  [ $((now - skip_ts)) -lt "$NXDOMAIN_TTL" ] && skip=1 ;;
+                    err) [ $((now - skip_ts)) -lt "$FAIL_COOLDOWN" ] && skip=1 ;;
+                esac
+            fi
             if [ "$skip" -eq 1 ]; then
                 if [ "$skip_status" = "ok" ]; then
                     left=$((SUCCESS_TTL - (now - skip_ts)))
@@ -308,6 +305,30 @@ tcpdump -i "$LAN_IFACE" -nn -l "udp port 53" 2>/dev/null | while read -r line; d
                 fi
                 should_log_skip "$domain" && log_result "-" "$domain -> SKIP (TTL кэш: $skip_status, ещё ${left}с)"
                 continue
+            fi
+
+            # Компакция RECENT_FILE: убираем протухшие записи, но НЕ на каждый
+            # запрос, а только когда файл разрастётся сверх RECENT_MAX_LINES -
+            # тот же принцип, что и rotate_log_if_needed() для логов выше.
+            # Черновик собирается в /tmp (RAM), финальный mv на флеш - одной
+            # операцией, но теперь это происходит редко, а не на каждый чих.
+            recent_lines=$(wc -l < "$RECENT_FILE" 2>/dev/null)
+            if [ "${recent_lines:-0}" -gt "$RECENT_MAX_LINES" ]; then
+                : > "$RECENT_FILE_TMP"
+                while read -r ts st d; do
+                    [ -z "$ts" ] && continue
+                    valid=0
+                    if [ "$st" = "ok" ] && [ $((now - ts)) -lt "$SUCCESS_TTL" ]; then
+                        valid=1
+                    elif [ "$st" = "nx" ] && [ $((now - ts)) -lt "$NXDOMAIN_TTL" ]; then
+                        valid=1
+                    elif [ "$st" = "err" ] && [ $((now - ts)) -lt "$FAIL_COOLDOWN" ]; then
+                        valid=1
+                    fi
+                    [ "$valid" -eq 1 ] && echo "$ts $st $d" >> "$RECENT_FILE_TMP"
+                done < "$RECENT_FILE"
+                mv "$RECENT_FILE_TMP" "$RECENT_FILE"
+                dbg "Компакция $RECENT_FILE: было $recent_lines строк"
             fi
 
             # Если у домена вообще нет DNS-записи - в API идти незачем, оно всё
