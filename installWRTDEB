@@ -1,0 +1,84 @@
+#!/bin/sh
+
+BASE_DIR="/opt/zator/extra_strats"
+
+echo "Установка tcpdump и curl"
+if command -v apk >/dev/null 2>&1; then
+    apk update && apk add tcpdump curl
+    default_iface="br0"
+elif command -v opkg >/dev/null 2>&1; then
+    opkg update && opkg install tcpdump curl
+    default_iface="br0"
+elif command -v apt-get >/dev/null 2>&1; then
+    apt-get update && apt-get install -y tcpdump curl dnsutils psmisc
+    default_iface="any"
+else
+    echo "Не найден ни apk, ни opkg, ни apt - ставь tcpdump/curl вручную" >&2
+    default_iface="br0"
+fi
+
+if command -v systemctl >/dev/null 2>&1; then
+    INIT_KIND="systemd"
+    INIT_SCRIPT="/etc/systemd/system/c2.service"
+else
+    INIT_KIND="procd"
+    INIT_SCRIPT="/etc/init.d/c2"
+fi
+
+if [ "$INIT_KIND" = systemd ]; then
+    systemctl stop c2 2>/dev/null
+else
+    [ -x "$INIT_SCRIPT" ] && "$INIT_SCRIPT" stop 2>/dev/null
+fi
+
+mkdir -p "$BASE_DIR"
+
+TARGET="$BASE_DIR/skip_wl.txt"
+TMP_NEW="/tmp/skip_wl_new.txt"
+if ! curl --connect-timeout 9 -f -L -o "$TMP_NEW" https://raw.githubusercontent.com/IndeecFOX/c/2/skip_wl.txt; then
+    echo "Ошибка скачивания skip_wl.txt - оставляем текущий файл без изменений"
+    rm -f "$TMP_NEW"
+    exit 1
+fi
+{ [ -f "$TARGET" ] && cat "$TARGET"; cat "$TMP_NEW"; } | sort -u > /tmp/skip_wl_merged.txt
+before=0; [ -f "$TARGET" ] && before=$(wc -l < "$TARGET")
+mv /tmp/skip_wl_merged.txt "$TARGET"
+rm -f "$TMP_NEW"
+echo "Объединено: было ${before} строк, стало $(wc -l < "$TARGET")"
+
+curl --connect-timeout 9 -L -o "$BASE_DIR/c2.sh" https://raw.githubusercontent.com/IndeecFOX/c/2/c2.sh || echo "c2.sh не скачался?"
+chmod +x "$BASE_DIR/c2.sh"
+
+if [ "$INIT_KIND" = systemd ]; then
+    curl --connect-timeout 9 -L -o "$INIT_SCRIPT" https://raw.githubusercontent.com/IndeecFOX/c/2/c2.service || echo "юнит не скачался?"
+    sed -i "s#^ExecStart=.*#ExecStart=$BASE_DIR/c2.sh#" "$INIT_SCRIPT"
+else
+    curl --connect-timeout 9 -L -o "$INIT_SCRIPT" https://raw.githubusercontent.com/IndeecFOX/c/2/c2.init || echo "init-скрипт не скачался?"
+    chmod +x "$INIT_SCRIPT"
+    sed -i "s#^SCRIPT=.*#SCRIPT=\"$BASE_DIR/c2.sh\"#" "$INIT_SCRIPT"
+fi
+
+printf '%s' "LAN-интерфейс для tcpdump (enter - $default_iface): "
+read -r lan_iface
+lan_iface="${lan_iface:-$default_iface}"
+sed -i "s/^LAN_IFACE=.*/LAN_IFACE=\"$lan_iface\"/" "$BASE_DIR/c2.sh"
+
+printf '%s' "Выполнить нормализацию листов? (enter - да, 666 - нет): "
+read -r a
+[ "$a" = "666" ] || "$BASE_DIR/c2.sh" normalize
+
+EDITOR_CMD="vi"
+command -v nano >/dev/null 2>&1 && EDITOR_CMD="nano"
+printf '%s' "Изменить конфиг сита? (enter - нет, 666 - да): "
+read -r a
+[ "$a" = "666" ] && "$EDITOR_CMD" "$BASE_DIR/c2.sh"
+
+if [ "$INIT_KIND" = systemd ]; then
+    systemctl daemon-reload
+    systemctl enable --now c2
+    systemctl is-active --quiet c2 && echo "запущено" || echo "не запустилось, смотри journalctl -u c2"
+else
+    "$INIT_SCRIPT" enable
+    "$INIT_SCRIPT" start
+    "$INIT_SCRIPT" running && echo "запущено" || echo "не запустилось, смотри logread"
+fi
